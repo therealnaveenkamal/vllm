@@ -91,7 +91,6 @@ class Attention(nn.Module, AttentionLayerBase):
         quant_config: Optional[QuantizationConfig] = None,
         logits_soft_cap: Optional[float] = None,
         per_layer_sliding_window: Optional[int] = None,
-        use_mla: bool = False,
         prefix: str = "",
         attn_type: str = AttentionType.DECODER,
         kv_sharing_target_layer_name: Optional[str] = None,
@@ -151,7 +150,6 @@ class Attention(nn.Module, AttentionLayerBase):
         # the quant op after this attention layer.
         self._o_scale_float: Optional[float] = None
 
-        self.use_mla = use_mla
         self.num_heads = num_heads
         self.head_size = head_size
         self.num_kv_heads = num_kv_heads
@@ -183,7 +181,7 @@ class Attention(nn.Module, AttentionLayerBase):
                                                  dtype,
                                                  kv_cache_dtype,
                                                  block_size,
-                                                 use_mla=use_mla,
+                                                 use_mla=False,
                                                  has_sink=self.has_sink)
         else:
             self.attn_backend = attn_backend
@@ -277,19 +275,15 @@ class Attention(nn.Module, AttentionLayerBase):
                                  dtype=query.dtype,
                                  device=query.device)
             hidden_size = output_shape[-1]
-            # We skip reshaping query, key and value tensors for the MLA
-            # backend since these tensors have different semantics and are
-            # processed differently.
-            if not self.use_mla:
-                # Reshape the query, key, and value tensors.
-                # NOTE(woosuk): We do this outside the custom op to minimize the
-                # CPU overheads from the non-CUDA-graph regions.
-                query = query.view(-1, self.num_heads, self.head_size)
-                output = output.view(-1, self.num_heads, self.head_size)
-                if key is not None:
-                    key = key.view(-1, self.num_kv_heads, self.head_size)
-                if value is not None:
-                    value = value.view(-1, self.num_kv_heads, self.head_size)
+            # Reshape the query, key, and value tensors.
+            # NOTE(woosuk): We do this outside the custom op to minimize the
+            # CPU overheads from the non-CUDA-graph regions.
+            query = query.view(-1, self.num_heads, self.head_size)
+            output = output.view(-1, self.num_heads, self.head_size)
+            if key is not None:
+                key = key.view(-1, self.num_kv_heads, self.head_size)
+            if value is not None:
+                value = value.view(-1, self.num_kv_heads, self.head_size)
             if self.use_direct_call:
                 forward_context: ForwardContext = get_forward_context()
                 attn_metadata = forward_context.attn_metadata
