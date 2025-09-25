@@ -88,6 +88,7 @@ class MultiHeadLatentAttentionWrapper(CustomOp):
             cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
+            kv_b_proj=self.kv_b_proj,
         )
 
         self.prefix = prefix
