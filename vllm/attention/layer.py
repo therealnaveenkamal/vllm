@@ -694,12 +694,12 @@ class MLAAttention(nn.Module, AttentionLayerBase):
         k_pe: torch.Tensor,
         output_shape: torch.Size | None = None,
     ) -> torch.Tensor:
+        forward_ctx: ForwardContext = get_forward_context()
+        attn_metadata = forward_ctx.attn_metadata
         if self.use_direct_call:
-            forward_context: ForwardContext = get_forward_context()
-            attn_metadata = forward_context.attn_metadata
             if isinstance(attn_metadata, dict):
                 attn_metadata = attn_metadata[self.layer_name]
-            self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+            self_kv_cache = self.kv_cache[forward_ctx.virtual_engine]
 
             # Mirror Attention.forward scale calculation path
             if self.calculate_kv_scales and getattr(
@@ -734,31 +734,58 @@ class MLAAttention(nn.Module, AttentionLayerBase):
                     output=tmp_out,
                 )
         else:
+            # Non-direct path: bypass unified op and call layer-level impl
+            # while inserting cudagraph-unsafe fences for piecewise capture.
+            if isinstance(attn_metadata, dict):
+                attn_metadata = attn_metadata[self.layer_name]
+
+            # Optionally calculate kv scales before attention region
+            if self.calculate_kv_scales and getattr(
+                attn_metadata, "enable_kv_scales_calculation", False
+            ):
+                self.calc_kv_scales(q, kv_c_normed, k_pe)
+
+            # For KV connector parity with custom op
+            wait_for_kv_layer_from_connector(self.layer_name)
+
+            kv_cache = self.kv_cache[forward_ctx.virtual_engine]
+
             if self.attn_backend.accept_output_buffer:
                 output = torch.zeros(output_shape, dtype=q.dtype, device=q.device)
-                torch.ops.vllm.unified_mla_attention_with_output(
+                torch.ops.vllm.mla_attn_fence()
+                result = self.forward_impl(
                     q,
                     kv_c_normed,
                     k_pe,
-                    output,
-                    self.layer_name,
+                    kv_cache,
+                    attn_metadata,
+                    output=output,
                 )
-                return output
+                torch.ops.vllm.mla_attn_fence()
+                maybe_save_kv_layer_to_connector(
+                    self.layer_name, self.kv_cache[forward_ctx.virtual_engine]
+                )
+                return result
             else:
-                # We can still access forward context to check calculation flag
-                if self.calculate_kv_scales:
-                    forward_context = get_forward_context()
-                    attn_metadata = forward_context.attn_metadata
-                    if isinstance(attn_metadata, dict):
-                        attn_metadata = attn_metadata[self.layer_name]
-                    if getattr(attn_metadata, "enable_kv_scales_calculation", False):
-                        self.calc_kv_scales(q, kv_c_normed, k_pe)
-                return torch.ops.vllm.unified_mla_attention(
+                inferred_shape = (
+                    q.shape[0],
+                    self.num_heads * self.v_head_dim,
+                )
+                output = torch.zeros(inferred_shape, dtype=q.dtype, device=q.device)
+                torch.ops.vllm.mla_attn_fence()
+                result = self.forward_impl(
                     q,
                     kv_c_normed,
                     k_pe,
-                    self.layer_name,
+                    kv_cache,
+                    attn_metadata,
+                    output=output,
                 )
+                torch.ops.vllm.mla_attn_fence()
+                maybe_save_kv_layer_to_connector(
+                    self.layer_name, self.kv_cache[forward_ctx.virtual_engine]
+                )
+                return result
 
     def process_weights_after_loading(self, act_dtype: torch.dtype):
         if hasattr(self.impl, "process_weights_after_loading"):
@@ -1029,6 +1056,26 @@ direct_register_custom_op(
     op_func=maybe_calc_kv_scales,
     mutates_args=["query", "key", "value"],
     fake_impl=maybe_calc_kv_scales_fake,
+)
+
+
+def mla_attn_fence() -> None:
+    # No-op op used to create a cudagraph-unsafe fence to preserve
+    # piecewise cudagraph capture boundaries when MLA attention runs
+    # outside of opaque unified custom ops.
+    return
+
+
+def mla_attn_fence_fake() -> None:
+    return
+
+
+direct_register_custom_op(
+    op_name="mla_attn_fence",
+    op_func=mla_attn_fence,
+    mutates_args=[],
+    fake_impl=mla_attn_fence_fake,
+    tags=tag_cudagraph_unsafe,
 )
 
 
