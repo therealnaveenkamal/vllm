@@ -1270,6 +1270,12 @@ class MLACommonImpl(MLACommonBaseImpl[M], Generic[M]):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
+        # Capability flags for layer-owned orchestration.
+        self.supports_layer_owned_orchestration: bool = True
+        self.supports_decode_q_tuple: bool = True
+        self.requires_decode_head_padding: bool = self.q_pad_num_heads is not None
+        self.supports_chunked_context_prefill: bool = True
+
         if use_flashinfer_prefill():
             logger.debug_once("Using FlashInfer prefill for MLA")
             self._run_prefill_context_chunk = self._run_prefill_context_chunk_fi
