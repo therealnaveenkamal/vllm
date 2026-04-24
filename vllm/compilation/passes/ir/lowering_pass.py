@@ -18,6 +18,7 @@ from vllm.logger import init_logger
 from vllm.logging_utils import lazy
 
 from ..vllm_inductor_pass import VllmInductorPass
+from .profiler_markers import add_ir_marker
 
 logger = init_logger(__name__)
 
@@ -92,7 +93,16 @@ class VllmIRLoweringPass(VllmInductorPass):
         # Defaults not present on node.args but required for replacement tracing
         bound_args = ir_op._py_signature.bind(*node.args)
         bound_args.apply_defaults()
+        graph = node.graph
+        marker = f"vllm_ir::{ir_op.name}"
+        existing_nodes = set(graph.nodes)
         match.replace_by_example(ir_op_impl.impl_fn, bound_args.args)
+        for replacement_node in graph.nodes:
+            if (
+                replacement_node not in existing_nodes
+                and replacement_node.op == "call_function"
+            ):
+                add_ir_marker(replacement_node, marker)
 
     @VllmInductorPass.time_and_log
     def __call__(self, graph: fx.Graph) -> None:

@@ -213,7 +213,8 @@ class IrOp:
         __call__ routes straight here instead of going through torch op dispatching.
         """
         impl = self.dispatch(*args, **kwargs)
-        return impl.impl_fn(*args, **kwargs)
+        with torch.profiler.record_function(f"vllm_ir::{self.name}"):
+            return impl.impl_fn(*args, **kwargs)
 
     def apply_arg_defaults(self, args) -> tuple:
         """

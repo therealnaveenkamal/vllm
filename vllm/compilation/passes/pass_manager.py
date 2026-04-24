@@ -15,6 +15,7 @@ from vllm.platforms import current_platform
 from vllm.utils.system_utils import set_env_var
 
 from .ir.lowering_pass import VllmIRLoweringPass
+from .ir.profiler_markers import install_inductor_kernel_marker_hooks
 from .vllm_inductor_pass import VllmInductorPass, VllmPatternMatcherPass
 
 if rocm_aiter_ops.is_enabled():
@@ -125,6 +126,7 @@ class PostGradPassManager(CustomGraphPass):  # type: ignore[misc]
 
     def configure(self, config: VllmConfig) -> None:
         self.pass_config = config.compilation_config.pass_config
+        install_inductor_kernel_marker_hooks()
 
         # Set the current vllm config to allow tracing CustomOp instances
         with set_current_vllm_config(config, check_compile=False):
